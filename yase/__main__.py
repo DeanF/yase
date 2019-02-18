@@ -17,7 +17,7 @@ DNS_RETRIES = 4
 async def fetch_bucket_gcp(bucket_name):
     try:
         async with session.head(f'http://storage.googleapis.com/{bucket_name}') as res:
-            if 404 == res.status:
+            if res.status in {400, 404}:
                 return None
             return f'gs://{bucket_name}'
     except aiohttp.ClientError:
@@ -34,12 +34,34 @@ async def fetch_bucket_s3(bucket_name):
         return None
 
 
-def generate_buckets(target, prefixes):
+def prefix_permutations(target, prefix, modifiers):
+    yield f'{target}.{prefix}'
+    yield f'{target}-{prefix}'
+    yield f'{target}{prefix}'
+    yield f'{prefix}.{target}'
+    yield f'{prefix}-{target}'
+    yield f'{prefix}{target}'
+
+
+def mod_permutations(target, prefix, modifiers):
+    for mod in modifiers:
+        yield f'{target}-{prefix}-{mod}'
+        yield f'{target}-{mod}-{prefix}'
+        yield f'{target}.{prefix}.{mod}'
+        yield f'{target}.{mod}.{prefix}'
+        yield f'{target}.{prefix}-{mod}'
+        yield f'{target}.{mod}-{prefix}'
+        yield f'{target}-{prefix}.{mod}'
+        yield f'{target}-{mod}.{prefix}'
+        yield f'{target}-{prefix}{mod}'
+        yield f'{target}-{mod}{prefix}'
+
+
+def generate_buckets(target, prefixes, modifiers):
     yield target
     for name in prefixes:
-        for c in SEPARATORS:
-            yield f'{target}{c}{name}'
-            yield f'{name}{c}{target}'
+        yield from mod_permutations(target, name, modifiers)
+        yield from prefix_permutations(target, name, modifiers)
 
 
 def bounded_as_completed(coros, bound):
@@ -65,11 +87,11 @@ def bounded_as_completed(coros, bound):
         yield first_to_finish()
 
 
-async def main(target, prefixes, bound=DEFAULT_BOUND):
+async def main(target, prefixes, modifiers, bound=DEFAULT_BOUND):
     for res in bounded_as_completed(
             itertools.chain.from_iterable(
                 (fetch_bucket_s3(name), fetch_bucket_gcp(name))
-                for name in generate_buckets(target, prefixes)
+                for name in generate_buckets(target, prefixes, modifiers)
             ),
             bound=bound
     ):
@@ -83,6 +105,8 @@ if __name__ == '__main__':
     parser.add_argument('--target', '-t', required=True)
     parser.add_argument('--prefixes', '-p', type=argparse.FileType('r'),
                         default=open('common_prefixes.txt'))
+    parser.add_argument('--modifiers', '-m', type=argparse.FileType('r'),
+                        default=open('common_modifiers.txt'))
     parser.add_argument('--bound', '-b', type=int, default=DEFAULT_BOUND)
     namespace = parser.parse_args()
 
@@ -96,7 +120,9 @@ if __name__ == '__main__':
     loop.run_until_complete(
         main(
             namespace.target,
-            namespace.prefixes.read().splitlines()
+            namespace.prefixes.read().splitlines(),
+            namespace.modifiers.read().splitlines(),
+            namespace.bound
         )
     )
-    session.close()
+    loop.run_until_complete(session.close())
