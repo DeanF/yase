@@ -18,20 +18,20 @@ async def fetch_bucket_gcp(bucket_name):
     try:
         async with session.head(f'http://storage.googleapis.com/{bucket_name}') as res:
             if 404 == res.status:
-                return False, bucket_name, 'gcp'
-            return True, bucket_name, 'gcp'
+                return None
+            return f'gs://{bucket_name}'
     except aiohttp.ClientError:
-        return False, bucket_name, 'gcp'
+        return None
 
 
 async def fetch_bucket_s3(bucket_name):
     try:
         result = await resolver.query(f'{bucket_name}.s3.amazonaws.com', QUERY_TYPE)
         if S3_NOT_FOUND_INDICATION in result.cname:
-            return False, bucket_name, 's3'
-        return True, bucket_name, 's3'
+            return None
+        return f's3://{bucket_name}'
     except aiodns.error.DNSError:
-        return False, bucket_name, 's3'
+        return None
 
 
 def generate_buckets(target, prefixes):
@@ -74,7 +74,7 @@ async def main(target, prefixes, bound=DEFAULT_BOUND):
             bound=bound
     ):
         result = await res
-        if result[0]:
+        if result:
             print(result)
 
 
