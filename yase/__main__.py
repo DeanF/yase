@@ -3,6 +3,7 @@ import asyncio
 import itertools
 
 import aiodns
+import aiohttp
 
 DEFAULT_BOUND = 1500
 S3_NOT_FOUND_INDICATION = 's3-directional'
@@ -13,14 +14,24 @@ CARES_KEEP_OPEN = 16
 DNS_RETRIES = 4
 
 
-async def fetch_bucket(bucket_name):
+async def fetch_bucket_gcp(bucket_name):
+    try:
+        async with session.head(f'http://storage.googleapis.com/{bucket_name}') as res:
+            if 404 == res.status:
+                return False, bucket_name, 'gcp'
+            return True, bucket_name, 'gcp'
+    except aiohttp.ClientError:
+        return False, bucket_name, 'gcp'
+
+
+async def fetch_bucket_s3(bucket_name):
     try:
         result = await resolver.query(f'{bucket_name}.s3.amazonaws.com', QUERY_TYPE)
         if S3_NOT_FOUND_INDICATION in result.cname:
-            return False, bucket_name
-        return True, bucket_name
+            return False, bucket_name, 's3'
+        return True, bucket_name, 's3'
     except aiodns.error.DNSError:
-        return False, bucket_name
+        return False, bucket_name, 's3'
 
 
 def generate_buckets(target, prefixes):
@@ -56,7 +67,10 @@ def bounded_as_completed(coros, bound):
 
 async def main(target, prefixes, bound=DEFAULT_BOUND):
     for res in bounded_as_completed(
-            (fetch_bucket(name) for name in generate_buckets(target, prefixes)),
+            itertools.chain.from_iterable(
+                (fetch_bucket_s3(name), fetch_bucket_gcp(name))
+                for name in generate_buckets(target, prefixes)
+            ),
             bound=bound
     ):
         result = await res
@@ -77,6 +91,7 @@ if __name__ == '__main__':
                                   nameservers=NAMESERVERS,
                                   tries=DNS_RETRIES,
                                   flags=CARES_KEEP_OPEN)
+    session = aiohttp.ClientSession()
 
     loop.run_until_complete(
         main(
@@ -84,3 +99,4 @@ if __name__ == '__main__':
             namespace.prefixes.read().splitlines()
         )
     )
+    session.close()
